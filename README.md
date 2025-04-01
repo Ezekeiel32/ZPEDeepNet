@@ -1,5 +1,4 @@
-# ZPE-Quantum-Noise
-
+# ZPE-Deep-Net
 An adaptive Zero-Point Energy (ZPE) noise generator built with PyTorch, designed to produce quantum noise with a target standard deviation. This project simulates ZPE fluctuations for quantum systems, aiming for a specific noise variance (e.g., std=0.05).
 
 ## Features
@@ -11,7 +10,7 @@ An adaptive Zero-Point Energy (ZPE) noise generator built with PyTorch, designed
 ## Installation
 1. Clone the repo:
    ```bash
-   git clone https://github.com/yourusername/ZPE-Quantum-Noise.git
+   git clone https://github.com/ezekiel32/ZPEDeepNet.git
    cd ZPE-Quantum-Noise
 
 2. Install dependencies:
