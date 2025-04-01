@@ -42,7 +42,7 @@ class AdaptiveZPENoise(torch.nn.Module):
             time_factor = 1.0
         
         effective_clamp = self.clamp_factor * (1.0 + 0.001 * self.train_steps)
-        effective_clamp = min(effective_clamp, 0.3)  # Increase max clamp to 0.3
+        effective_clamp = min(effective_clamp, 0.3)
         
         raw_noise = torch.randn(self.dim_size, device=device)
         scaled_noise = raw_noise * (effective_clamp * self.E0)
@@ -50,10 +50,8 @@ class AdaptiveZPENoise(torch.nn.Module):
         dynamic_scale = torch.abs(self.zpe_scale) * time_factor
         noise = scaled_noise * dynamic_scale
         
-        # Add bias first
         noise = noise + self.zpe_bias
         
-        # Apply clamping to the final noise, centered around the target mean
         noise = torch.clamp(noise, self.target_mean - effective_clamp * self.E0, self.target_mean + effective_clamp * self.E0)
         
         if self.train_steps % 100 == 0 or self.train_steps < 5:
@@ -111,8 +109,8 @@ class AdaptiveZPENoise(torch.nn.Module):
             
             with torch.no_grad():
                 current_bias_mean = self.zpe_bias.mean().item()
-                if abs(current_bias_mean - target_mean) > 0.1:  # Tighten threshold
-                    correction = 0.1 * (target_mean - current_bias_mean)  # Increase correction strength
+                if abs(current_bias_mean - target_mean) > 0.1:
+                    correction = 0.1 * (target_mean - current_bias_mean)
                     self.zpe_bias.add_(correction)
         
         self.noise_history.append(noise.detach().mean().cpu().item())
@@ -256,10 +254,13 @@ def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_ste
             print(f"\nEarly stopping at step {step+1}")
             break
     
-    # Final mean adjustment
+    # Final mean adjustment using multiple samples
     with torch.no_grad():
-        final_noise = noise_gen.forward()
-        mean_error = final_noise.mean().item() - target_mean
+        means = []
+        for _ in range(10):  # Average over 10 samples to reduce noise
+            noise = noise_gen.forward()
+            means.append(noise.mean().item())
+        mean_error = sum(means) / len(means) - target_mean
         noise_gen.zpe_bias.add_(-mean_error)
     
     plt.figure(figsize=(10, 6))
