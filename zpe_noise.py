@@ -1,6 +1,7 @@
 import torch
 import math
 import matplotlib.pyplot as plt
+import os
 
 print(f"PyTorch Version: {torch.__version__}")
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -8,7 +9,7 @@ torch.backends.cudnn.benchmark = True
 
 class AdaptiveZPENoise(torch.nn.Module):
     def __init__(self, dim_size, h_bar=1.0, omega=1.0, initial_clamp=0.01, 
-                 min_std=1e-6, learn_rate=0.001):
+                 min_std=1e-6, learn_rate=0.01):
         super(AdaptiveZPENoise, self).__init__()
         self.E0 = 0.5 * h_bar * omega
         self.dim_size = dim_size
@@ -36,12 +37,20 @@ class AdaptiveZPENoise(torch.nn.Module):
         
         effective_clamp = self.clamp_factor * (1.0 + 0.01 * self.train_steps)
         raw_noise = torch.randn(self.dim_size, device=device)
-        scaled_noise = raw_noise * (effective_clamp * self.E0 * 1.0)  # Increased from 0.9
+        scaled_noise = raw_noise * (effective_clamp * self.E0 * 4.0)
         
         dynamic_scale = self.zpe_scale * time_factor
         noise = scaled_noise * dynamic_scale
         
-        noise = torch.clamp(noise, -effective_clamp * self.E0, effective_clamp * self.E0)
+        # Debug prints
+        print(f"Step {self.train_steps}: raw_noise std: {raw_noise.std().item():.6f}")
+        print(f"Step {self.train_steps}: scaled_noise std: {scaled_noise.std().item():.6f}")
+        print(f"Step {self.train_steps}: dynamic_scale mean: {dynamic_scale.mean().item():.6f}")
+        print(f"Step {self.train_steps}: noise before bias std: {noise.std().item():.6f}")
+        print(f"Step {self.train_steps}: zpe_bias mean: {self.zpe_bias.mean().item():.6f}")
+        
+        noise = torch.clamp(noise, -effective_clamp * self.E0 * 2.0, effective_clamp * self.E0 * 2.0)
+        noise = noise + self.zpe_bias
         return noise
     
     def train_step(self, target_std=None, target_mean=None):
@@ -56,9 +65,8 @@ class AdaptiveZPENoise(torch.nn.Module):
             if noise_std < target_std:
                 variance_penalty = 20.0 * (target_std - noise_std).pow(2)
                 loss += variance_penalty
-                # Slightly stronger push on scale
                 loss += 0.2 * torch.nn.functional.mse_loss(self.zpe_scale.mean(), 
-                                                           torch.tensor(target_std * 3.5, device=device))
+                                                           torch.tensor(target_std * 4.0, device=device))
             else:
                 variance_penalty = 20.0 * (noise_std - target_std).pow(2)
                 loss += variance_penalty
@@ -66,8 +74,9 @@ class AdaptiveZPENoise(torch.nn.Module):
                                                            torch.tensor(target_std, device=device))
         
         if target_mean is not None:
-            loss += torch.nn.functional.mse_loss(noise_mean, torch.tensor(target_mean, device=device))
-            loss += 0.1 * torch.nn.functional.mse_loss(self.zpe_bias.mean(), 
+            mean_loss = 1.0 * torch.nn.functional.mse_loss(noise_mean, torch.tensor(target_mean, device=device))
+            loss += mean_loss
+            loss += 0.5 * torch.nn.functional.mse_loss(self.zpe_bias.mean(), 
                                                        torch.tensor(target_mean, device=device))
         
         if noise_std < self.min_std:
@@ -123,7 +132,8 @@ class AdaptiveZPENoise(torch.nn.Module):
         plt.xlabel('Training Steps')
         plt.ylabel('Clamp Value')
         plt.tight_layout()
-        plt.show()
+        plt.savefig('plots/training_history.png')
+        plt.close()
 
 class ToyModel(torch.nn.Module):
     def __init__(self, dim_size):
@@ -133,9 +143,9 @@ class ToyModel(torch.nn.Module):
     def forward(self, x, noise):
         return self.linear(x + noise)
 
-def train_zpe_noise(dim_size=512, target_std=0.05, training_steps=1000):
+def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_steps=1000):
     print(f"\n=== Training Adaptive ZPE Noise ===")
-    print(f"Dim Size: {dim_size}, Target Std: {target_std}")
+    print(f"Dim Size: {dim_size}, Target Std: {target_std}, Target Mean: {target_mean}")
     print(f"Training Steps: {training_steps}")
     print(f"Device: {device}")
     
@@ -148,7 +158,7 @@ def train_zpe_noise(dim_size=512, target_std=0.05, training_steps=1000):
     print(f"Clamp Factor: {stats['clamp_factor']:.6f}")
     
     for step in range(training_steps):
-        noise, loss = noise_gen.train_step(target_std=target_std)
+        noise, loss = noise_gen.train_step(target_std=target_std, target_mean=target_mean)
         if (step+1) % 100 == 0 or step == 0:
             stats = noise_gen.get_noise_stats()
             print(f"\nStep {step+1}/{training_steps}, Loss: {loss.item():.6f}")
@@ -168,11 +178,14 @@ def train_zpe_noise(dim_size=512, target_std=0.05, training_steps=1000):
     return noise_gen
 
 if __name__ == "__main__":
+    os.makedirs("plots", exist_ok=True)
+    
     dim_size = 512
-    target_std = 0.05
+    target_std = 0.1
+    target_mean = 5.39
     training_steps = 1000
     
-    noise_gen = train_zpe_noise(dim_size, target_std, training_steps)
+    noise_gen = train_zpe_noise(dim_size, target_std, target_mean, training_steps)
     
     print("\n=== Integrating with Toy Model ===")
     model = ToyModel(dim_size).to(device)
