@@ -10,7 +10,7 @@ An adaptive Zero-Point Energy (ZPE) noise generator built with PyTorch, designed
 ## Installation
 1. Clone the repo:
    ```bash
-   git clone https://github.com/ezekiel32/ZPEDeepNet.git
+   git clone https://github.com/ezekeiel32/ZPEDeepNet.git
    cd ZPE-Quantum-Noise
 
 2. Install dependencies:
