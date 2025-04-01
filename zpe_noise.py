@@ -17,9 +17,9 @@ class AdaptiveZPENoise(torch.nn.Module):
         self.target_mean = target_mean
         self.target_std = target_std
         
-        # Initialize parameters directly with target values
+        # Fix 1: Initialize parameters directly with target values to prevent drift
         initial_scale = target_std / (initial_clamp * self.E0 * 2.0)
-        initial_bias = target_mean  # Start exactly at target mean
+        initial_bias = target_mean  # Start exactly at target mean (5.39)
         
         # Create learnable parameters
         self.zpe_scale = torch.nn.Parameter(torch.ones(dim_size, device=device) * initial_scale)
@@ -34,7 +34,7 @@ class AdaptiveZPENoise(torch.nn.Module):
         self.clamp_history = []
         self.std_history = []
         
-        # Lower learning rates and use Adam with lower beta values for less momentum
+        # Fix 2: Lower learning rates and use Adam with lower beta values for less momentum
         self.optimizer = torch.optim.Adam([
             {'params': self.zpe_scale, 'lr': learn_rate},
             {'params': self.zpe_bias, 'lr': bias_learn_rate}
@@ -42,10 +42,10 @@ class AdaptiveZPENoise(torch.nn.Module):
         
     def forward(self, time_factor=None):
         if time_factor is None:
-            # Smaller oscillation factor to prevent large fluctuations
+            # Fix 3: Smaller oscillation factor to prevent large fluctuations
             time_factor = 1.0 + 0.03 * math.sin(self.train_steps * 0.03)
         
-        # Very slow clamp growth with upper limit
+        # Fix 4: Very slow clamp growth with upper limit
         effective_clamp = self.clamp_factor * (1.0 + 0.001 * self.train_steps)
         effective_clamp = min(effective_clamp, 0.15)  # Lower maximum clamp
         
@@ -83,7 +83,7 @@ class AdaptiveZPENoise(torch.nn.Module):
         noise_std = noise.std()
         noise_mean = noise.mean()
         
-        # Direct mean targeting with strong weight
+        # Fix 5: Direct mean targeting with strong weight to prevent drift
         mean_diff = noise_mean - target_mean
         mean_loss = 10.0 * mean_diff.pow(2)
         loss += mean_loss
@@ -93,16 +93,15 @@ class AdaptiveZPENoise(torch.nn.Module):
         std_loss = 5.0 * std_diff.pow(2)
         loss += std_loss
         
-        # Directly guide bias parameter with momentum damping
-        # This is critical for mean convergence
+        # Fix 6: Directly guide bias parameter to prevent drift
         bias_diff = self.zpe_bias.mean() - target_mean
         bias_loss = 2.0 * bias_diff.pow(2)
         loss += bias_loss
         
-        # More sophisticated scale guidance that considers the noise generation process
+        # More sophisticated scale guidance
         effective_clamp = self.clamp_factor * (1.0 + 0.001 * self.train_steps)
         effective_clamp = min(effective_clamp, 0.15)
-        target_scale = target_std / (effective_clamp * self.E0 * 0.99)  # Slight adjustment factor
+        target_scale = target_std / (effective_clamp * self.E0 * 0.99)
         scale_diff = self.zpe_scale.mean() - target_scale
         scale_loss = 1.0 * scale_diff.pow(2)
         loss += scale_loss
@@ -118,13 +117,12 @@ class AdaptiveZPENoise(torch.nn.Module):
             self.optimizer.zero_grad()
             loss.backward()
             
-            # Strict gradient clipping to prevent oscillation
+            # Fix 7: Strict gradient clipping to prevent oscillation
             torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
             
             self.optimizer.step()
             
-            # Direct intervention if we're way off target for bias
-            # This helps prevent getting stuck in local minima
+            # Fix 8: Direct intervention if bias drifts too far
             with torch.no_grad():
                 current_bias_mean = self.zpe_bias.mean().item()
                 if abs(current_bias_mean - target_mean) > 1.0:
@@ -195,7 +193,6 @@ class AdaptiveZPENoise(torch.nn.Module):
         plt.ylabel('Clamp Value')
         
         plt.subplot(3, 2, 6)
-        # Compute distance to target over time
         mean_diffs = [abs(m - self.target_mean) for m in self.noise_history]
         std_diffs = [abs(s - self.target_std) for s in self.std_history]
         plt.plot(mean_diffs, label='Mean Error')
@@ -210,7 +207,6 @@ class AdaptiveZPENoise(torch.nn.Module):
         plt.savefig('plots/training_history.png')
         plt.close()
 
-
 class ToyModel(torch.nn.Module):
     def __init__(self, dim_size):
         super().__init__()
@@ -219,17 +215,14 @@ class ToyModel(torch.nn.Module):
     def forward(self, x, noise):
         return self.linear(x + noise)
 
-
 def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_steps=1500):
     print(f"\n=== Training Adaptive ZPE Noise ===")
     print(f"Dim Size: {dim_size}, Target Std: {target_std}, Target Mean: {target_mean}")
     print(f"Training Steps: {training_steps}")
     print(f"Device: {device}")
     
-    # Create directories for plots
     os.makedirs("plots", exist_ok=True)
     
-    # Initialize with target values
     noise_gen = AdaptiveZPENoise(dim_size, 
                                 target_mean=target_mean, 
                                 target_std=target_std).to(device)
@@ -241,25 +234,22 @@ def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_ste
     print(f"Clamp Factor: {stats['clamp_factor']:.6f}")
     print(f"Scale Mean: {stats['scale_mean']:.6f}, Bias Mean: {stats['bias_mean']:.6f}")
     
-    # Early stopping variables
+    # Fix 9: Early stopping to prevent overtraining
     best_combined_error = float('inf')
     patience = 100
     patience_counter = 0
     
-    # For detailed monitoring
     errors = []
     
     for step in range(training_steps):
         noise, loss = noise_gen.train_step(target_std=target_std, target_mean=target_mean)
         
-        # Compute error metrics
         with torch.no_grad():
             mean_error = abs(noise.mean().item() - target_mean)
             std_error = abs(noise.std().item() - target_std)
             combined_error = mean_error + std_error
             errors.append((mean_error, std_error, combined_error))
         
-        # Print progress
         if (step+1) % 100 == 0 or step == 0:
             stats = noise_gen.get_noise_stats()
             print(f"\nStep {step+1}/{training_steps}, Loss: {loss.item():.6f}")
@@ -268,12 +258,10 @@ def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_ste
             print(f"Combined Error: {combined_error:.6f}")
             print(f"Scale Mean: {stats['scale_mean']:.6f}, Bias Mean: {stats['bias_mean']:.6f}")
             
-            # Check if we're close enough to target
             if mean_error < 0.01 and std_error < 0.01:
                 print(f"Target reached at step {step+1}!")
                 break
         
-        # Early stopping check
         if combined_error < best_combined_error:
             best_combined_error = combined_error
             patience_counter = 0
@@ -284,7 +272,6 @@ def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_ste
             print(f"\nEarly stopping at step {step+1}")
             break
     
-    # Plot error curves
     plt.figure(figsize=(10, 6))
     mean_errors, std_errors, combined_errors = zip(*errors)
     plt.plot(mean_errors, label='Mean Error')
@@ -298,7 +285,6 @@ def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_ste
     plt.savefig('plots/error_curves.png')
     plt.close()
     
-    # Final stats
     stats = noise_gen.get_noise_stats()
     print(f"\n=== Final Stats ===")
     print(f"Mean: {stats['mean']:.6f} (target: {target_mean}, error: {abs(stats['mean'] - target_mean):.6f})")
@@ -306,7 +292,6 @@ def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_ste
     print(f"Min: {stats['min']:.6f}, Max: {stats['max']:.6f}")
     print(f"Scale Mean: {stats['scale_mean']:.6f}, Bias Mean: {stats['bias_mean']:.6f}")
     
-    # Generate histogram of final noise distribution
     with torch.no_grad():
         final_noise = noise_gen.forward().cpu().numpy()
         plt.figure(figsize=(10, 6))
@@ -322,7 +307,6 @@ def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_ste
     noise_gen.plot_history()
     return noise_gen
 
-
 if __name__ == "__main__":
     dim_size = 512
     target_std = 0.1
@@ -337,7 +321,7 @@ if __name__ == "__main__":
     output = model(dummy_data, noise_gen.forward())
     print(f"Output Sample (first 5): {output[0, :5].tolist()}")
     
-    # Test noise stability across multiple generations
+    # Fix 10: Test noise stability across multiple generations
     print("\n=== Noise Stability Test ===")
     means = []
     stds = []
@@ -351,3 +335,4 @@ if __name__ == "__main__":
     print(f"Mean of stds: {sum(stds)/len(stds):.6f} (target: {target_std})")
     print(f"Variance of means: {torch.tensor(means).var().item():.6f}")
     print(f"Variance of stds: {torch.tensor(stds).var().item():.6f}")
+    
