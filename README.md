@@ -14,13 +14,10 @@ An adaptive Zero-Point Energy (ZPE) noise generator built with PyTorch, designed
    cd ZPE-Quantum-Noise
 
 2. Install dependencies:
-bash
-pip install -r requirements.txt
+bash pip install -r requirements.txt
 
 3. Run the code:
-bash
-
-python zpe_noise.py
+bash python zpe_noise.py
 
 Usage:
 
