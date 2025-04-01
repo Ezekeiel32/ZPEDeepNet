@@ -9,7 +9,7 @@ torch.backends.cudnn.benchmark = True
 
 class AdaptiveZPENoise(torch.nn.Module):
     def __init__(self, dim_size, h_bar=1.0, omega=1.0, initial_clamp=0.01, 
-                 min_std=1e-6, learn_rate=0.01):
+                 min_std=1e-6, learn_rate=0.01, bias_learn_rate=0.1):
         super(AdaptiveZPENoise, self).__init__()
         self.E0 = 0.5 * h_bar * omega
         self.dim_size = dim_size
@@ -29,7 +29,11 @@ class AdaptiveZPENoise(torch.nn.Module):
         self.scale_history = []
         self.bias_history = []
         self.clamp_history = []
-        self.optimizer = torch.optim.Adam([self.zpe_scale, self.zpe_bias], lr=learn_rate)
+        # Separate learning rates for scale and bias
+        self.optimizer = torch.optim.Adam([
+            {'params': self.zpe_scale, 'lr': learn_rate},
+            {'params': self.zpe_bias, 'lr': bias_learn_rate}
+        ])
         
     def forward(self, time_factor=None):
         if time_factor is None:
@@ -63,21 +67,21 @@ class AdaptiveZPENoise(torch.nn.Module):
         
         if target_std is not None:
             if noise_std < target_std:
-                variance_penalty = 20.0 * (target_std - noise_std).pow(2)
+                variance_penalty = 30.0 * (target_std - noise_std).pow(2)  # Increased weight
                 loss += variance_penalty
-                loss += 0.2 * torch.nn.functional.mse_loss(self.zpe_scale.mean(), 
+                loss += 0.3 * torch.nn.functional.mse_loss(self.zpe_scale.mean(), 
                                                            torch.tensor(target_std * 4.0, device=device))
             else:
-                variance_penalty = 20.0 * (noise_std - target_std).pow(2)
+                variance_penalty = 30.0 * (noise_std - target_std).pow(2)  # Increased weight
                 loss += variance_penalty
-                loss += 0.1 * torch.nn.functional.mse_loss(self.zpe_scale.mean(), 
-                                                           torch.tensor(target_std, device=device))
+                loss += 0.15 * torch.nn.functional.mse_loss(self.zpe_scale.mean(), 
+                                                            torch.tensor(target_std, device=device))
         
         if target_mean is not None:
-            mean_loss = 1.0 * torch.nn.functional.mse_loss(noise_mean, torch.tensor(target_mean, device=device))
+            mean_loss = 5.0 * torch.nn.functional.mse_loss(noise_mean, torch.tensor(target_mean, device=device))  # Increased weight
             loss += mean_loss
-            loss += 0.5 * torch.nn.functional.mse_loss(self.zpe_bias.mean(), 
-                                                       torch.tensor(target_mean, device=device))
+            loss += 1.0 * torch.nn.functional.mse_loss(self.zpe_bias.mean(), 
+                                                       torch.tensor(target_mean, device=device))  # Increased weight
         
         if noise_std < self.min_std:
             loss += 1.0 * (self.min_std - noise_std)
