@@ -8,7 +8,7 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 torch.backends.cudnn.benchmark = True
 
 class AdaptiveZPENoise(torch.nn.Module):
-    def __init__(self, dim_size, h_bar=1.0, omega=1.0, initial_clamp=0.05, 
+    def __init__(self, dim_size, h_bar=1.0, omega=1.0, initial_clamp=0.1, 
                  min_std=1e-6, learn_rate=0.003, bias_learn_rate=0.008,
                  target_mean=5.39, target_std=0.1):
         super(AdaptiveZPENoise, self).__init__()
@@ -17,11 +17,9 @@ class AdaptiveZPENoise(torch.nn.Module):
         self.target_mean = target_mean
         self.target_std = target_std
         
-        # Fix 1: Initialize parameters directly with target values to prevent drift
         initial_scale = target_std / (initial_clamp * self.E0 * 2.0)
-        initial_bias = target_mean  # Start exactly at target mean (5.39)
+        initial_bias = target_mean
         
-        # Create learnable parameters
         self.zpe_scale = torch.nn.Parameter(torch.ones(dim_size, device=device) * initial_scale)
         self.zpe_bias = torch.nn.Parameter(torch.ones(dim_size, device=device) * initial_bias)
         self.clamp_factor = initial_clamp
@@ -34,7 +32,6 @@ class AdaptiveZPENoise(torch.nn.Module):
         self.clamp_history = []
         self.std_history = []
         
-        # Fix 2: Lower learning rates and use Adam with lower beta values for less momentum
         self.optimizer = torch.optim.Adam([
             {'params': self.zpe_scale, 'lr': learn_rate},
             {'params': self.zpe_bias, 'lr': bias_learn_rate}
@@ -42,20 +39,23 @@ class AdaptiveZPENoise(torch.nn.Module):
         
     def forward(self, time_factor=None):
         if time_factor is None:
-            # Fix 3: Smaller oscillation factor to prevent large fluctuations
-            time_factor = 1.0 + 0.03 * math.sin(self.train_steps * 0.03)
+            time_factor = 1.0
         
-        # Fix 4: Very slow clamp growth with upper limit
         effective_clamp = self.clamp_factor * (1.0 + 0.001 * self.train_steps)
-        effective_clamp = min(effective_clamp, 0.15)  # Lower maximum clamp
+        effective_clamp = min(effective_clamp, 0.3)  # Increase max clamp to 0.3
         
         raw_noise = torch.randn(self.dim_size, device=device)
-        scaled_noise = raw_noise * (effective_clamp * self.E0)  # Removed multiplier
+        scaled_noise = raw_noise * (effective_clamp * self.E0)
         
-        dynamic_scale = torch.abs(self.zpe_scale) * time_factor  # Ensure positive scaling
+        dynamic_scale = torch.abs(self.zpe_scale) * time_factor
         noise = scaled_noise * dynamic_scale
         
-        # Debug prints less frequently
+        # Add bias first
+        noise = noise + self.zpe_bias
+        
+        # Apply clamping to the final noise, centered around the target mean
+        noise = torch.clamp(noise, self.target_mean - effective_clamp * self.E0, self.target_mean + effective_clamp * self.E0)
+        
         if self.train_steps % 100 == 0 or self.train_steps < 5:
             print(f"Step {self.train_steps}: raw_noise std: {raw_noise.std().item():.6f}")
             print(f"Step {self.train_steps}: scaled_noise std: {scaled_noise.std().item():.6f}")
@@ -63,15 +63,11 @@ class AdaptiveZPENoise(torch.nn.Module):
             print(f"Step {self.train_steps}: noise before bias std: {noise.std().item():.6f}")
             print(f"Step {self.train_steps}: zpe_bias mean: {self.zpe_bias.mean().item():.6f}")
         
-        # Apply clamping and bias
-        noise = torch.clamp(noise, -effective_clamp * self.E0, effective_clamp * self.E0)
-        noise = noise + self.zpe_bias
         return noise
     
     def train_step(self, target_std=None, target_mean=None):
         self.train_steps += 1
         
-        # Use instance defaults if not specified
         if target_std is None:
             target_std = self.target_std
         if target_mean is None:
@@ -83,57 +79,46 @@ class AdaptiveZPENoise(torch.nn.Module):
         noise_std = noise.std()
         noise_mean = noise.mean()
         
-        # Fix 5: Direct mean targeting with strong weight to prevent drift
         mean_diff = noise_mean - target_mean
-        mean_loss = 10.0 * mean_diff.pow(2)
+        mean_loss = 20.0 * mean_diff.pow(2)
         loss += mean_loss
         
-        # Direct std targeting with moderate weight
         std_diff = noise_std - target_std
         std_loss = 5.0 * std_diff.pow(2)
         loss += std_loss
         
-        # Fix 6: Directly guide bias parameter to prevent drift
         bias_diff = self.zpe_bias.mean() - target_mean
         bias_loss = 2.0 * bias_diff.pow(2)
         loss += bias_loss
         
-        # More sophisticated scale guidance
         effective_clamp = self.clamp_factor * (1.0 + 0.001 * self.train_steps)
-        effective_clamp = min(effective_clamp, 0.15)
+        effective_clamp = min(effective_clamp, 0.3)
         target_scale = target_std / (effective_clamp * self.E0 * 0.99)
         scale_diff = self.zpe_scale.mean() - target_scale
         scale_loss = 1.0 * scale_diff.pow(2)
         loss += scale_loss
         
-        # Minimum std safeguard
         if noise_std < self.min_std:
             loss += 2.0 * (self.min_std - noise_std)
         
-        # Very light regularization
         loss += 0.00001 * (self.zpe_scale.pow(2).mean() + (self.zpe_bias - target_mean).pow(2).mean())
         
         if loss > 0:
             self.optimizer.zero_grad()
             loss.backward()
-            
-            # Fix 7: Strict gradient clipping to prevent oscillation
             torch.nn.utils.clip_grad_norm_(self.parameters(), 0.5)
-            
             self.optimizer.step()
             
-            # Fix 8: Direct intervention if bias drifts too far
             with torch.no_grad():
                 current_bias_mean = self.zpe_bias.mean().item()
-                if abs(current_bias_mean - target_mean) > 1.0:
-                    correction = 0.05 * (target_mean - current_bias_mean)
+                if abs(current_bias_mean - target_mean) > 0.1:  # Tighten threshold
+                    correction = 0.1 * (target_mean - current_bias_mean)  # Increase correction strength
                     self.zpe_bias.add_(correction)
         
-        # Record history for plotting
         self.noise_history.append(noise.detach().mean().cpu().item())
         self.scale_history.append(self.zpe_scale.detach().mean().cpu().item())
         self.bias_history.append(self.zpe_bias.detach().mean().cpu().item())
-        self.clamp_history.append(min(self.clamp_factor * (1.0 + 0.001 * self.train_steps), 0.15))
+        self.clamp_history.append(min(self.clamp_factor * (1.0 + 0.001 * self.train_steps), 0.3))
         self.std_history.append(noise_std.detach().cpu().item())
         
         return noise.detach(), loss.detach() if loss > 0 else torch.tensor(0.0)
@@ -146,7 +131,7 @@ class AdaptiveZPENoise(torch.nn.Module):
                 'std': noise.std().item(),
                 'min': noise.min().item(),
                 'max': noise.max().item(),
-                'clamp_factor': min(self.clamp_factor * (1.0 + 0.001 * self.train_steps), 0.15),
+                'clamp_factor': min(self.clamp_factor * (1.0 + 0.001 * self.train_steps), 0.3),
                 'scale_mean': self.zpe_scale.mean().item(),
                 'bias_mean': self.zpe_bias.mean().item(),
                 'target_mean': self.target_mean,
@@ -234,7 +219,6 @@ def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_ste
     print(f"Clamp Factor: {stats['clamp_factor']:.6f}")
     print(f"Scale Mean: {stats['scale_mean']:.6f}, Bias Mean: {stats['bias_mean']:.6f}")
     
-    # Fix 9: Early stopping to prevent overtraining
     best_combined_error = float('inf')
     patience = 100
     patience_counter = 0
@@ -258,7 +242,7 @@ def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_ste
             print(f"Combined Error: {combined_error:.6f}")
             print(f"Scale Mean: {stats['scale_mean']:.6f}, Bias Mean: {stats['bias_mean']:.6f}")
             
-            if mean_error < 0.01 and std_error < 0.01:
+            if mean_error < 0.001 and std_error < 0.001:
                 print(f"Target reached at step {step+1}!")
                 break
         
@@ -271,6 +255,12 @@ def train_zpe_noise(dim_size=512, target_std=0.1, target_mean=5.39, training_ste
         if patience_counter >= patience and step > 300:
             print(f"\nEarly stopping at step {step+1}")
             break
+    
+    # Final mean adjustment
+    with torch.no_grad():
+        final_noise = noise_gen.forward()
+        mean_error = final_noise.mean().item() - target_mean
+        noise_gen.zpe_bias.add_(-mean_error)
     
     plt.figure(figsize=(10, 6))
     mean_errors, std_errors, combined_errors = zip(*errors)
@@ -321,7 +311,6 @@ if __name__ == "__main__":
     output = model(dummy_data, noise_gen.forward())
     print(f"Output Sample (first 5): {output[0, :5].tolist()}")
     
-    # Fix 10: Test noise stability across multiple generations
     print("\n=== Noise Stability Test ===")
     means = []
     stds = []
@@ -335,4 +324,3 @@ if __name__ == "__main__":
     print(f"Mean of stds: {sum(stds)/len(stds):.6f} (target: {target_std})")
     print(f"Variance of means: {torch.tensor(means).var().item():.6f}")
     print(f"Variance of stds: {torch.tensor(stds).var().item():.6f}")
-    
