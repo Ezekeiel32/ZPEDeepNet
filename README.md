@@ -1,5 +1,7 @@
 # ZPEDeepNet: adaptive noise generator
 
+[![CI](https://github.com/Ezekeiel32/ZPEDeepNet/actions/workflows/ci.yml/badge.svg)](https://github.com/Ezekeiel32/ZPEDeepNet/actions/workflows/ci.yml) [![Release](https://img.shields.io/github/v/release/Ezekeiel32/ZPEDeepNet?label=release)](https://github.com/Ezekeiel32/ZPEDeepNet/releases) [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE) ![Python](https://img.shields.io/badge/Python-3-3776AB) ![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C)
+
 A small PyTorch experiment: a noise generator with a learnable scale and bias, trained so that its output hits a target mean and standard deviation. Its base amplitude comes from the zero-point energy formula E0 = ½ħω (with ħ = ω = 1 by default), which is where the name comes from.
 
 ## How it works
@@ -33,6 +35,15 @@ python zpe_noise.py
 ```
 
 The script prints its progress and saves three plots to `plots/`. It runs on a GPU if one is available, otherwise on the CPU.
+
+## Development
+
+```bash
+pip install pytest
+pytest -q
+```
+
+The tests check the output shape and the reported statistics, and run a short training that must move the noise toward its targets. CI runs them on every pull request. The branch model and the pull request checklist are in [CONTRIBUTING.md](CONTRIBUTING.md), and release notes are in [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
