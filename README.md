@@ -1,34 +1,39 @@
-# ZPE-Deep-Net
-An adaptive Zero-Point Energy (ZPE) noise generator built with PyTorch, designed to produce quantum noise with a target standard deviation. This project simulates ZPE fluctuations for quantum systems, aiming for a specific noise variance (e.g., std=0.05).
+# ZPEDeepNet: adaptive noise generator
 
-## Features
-- Generates Gaussian noise with a target standard deviation.
-- Uses PyTorch for tensor operations and optimization.
-- Includes training loop to adaptively adjust noise parameters.
-- Visualizes training progress with matplotlib plots.
+A small PyTorch experiment: a noise generator with a learnable scale and bias, trained so that its output hits a target mean and standard deviation. Its base amplitude comes from the zero-point energy formula E0 = ½ħω (with ħ = ω = 1 by default), which is where the name comes from.
 
-## Installation
-1. Clone the repo:
-   ```bash
-   git clone https://github.com/Ezekeiel32/ZPEDeepNet.git
-   cd ZPE-Quantum-Noise
+## How it works
 
-2. Install dependencies:
-bash pip install -r requirements.txt
+`AdaptiveZPENoise` in `zpe_noise.py` draws Gaussian noise for a 512-element vector, then:
 
-3. Run the code:
-bash python zpe_noise.py
+1. scales it by E0, a clamp factor and a learnable per-element scale;
+2. adds a learnable per-element bias;
+3. clamps the result to a window around the target mean that widens as training goes on.
 
-Usage:
+Adam trains the scale and bias on a weighted loss: the mean error, the standard-deviation error, and terms that keep the bias and scale near their targets. Every 100 steps the script checks both errors and stops once they are under 0.001. It also stops early when the error stops improving, or after 1,500 steps.
 
-The script trains an AdaptiveZPENoise model to generate noise with a target standard deviation of 0.05 over 1000 steps. 
-It outputs logs and plots showing the noise mean, scale, bias, and clamp factor over training.
+## Results
 
-Results:
+In a CPU run, the generator met both targets at step 1,000:
 
-After 1000 training steps, the noise standard deviation stabilizes around 0.05, with a random, Gaussian distribution centered near 0.
+| | Target | Result |
+|---|---|---|
+| Mean | 5.39 | 5.3902 |
+| Standard deviation | 0.1 | 0.0999 |
 
+Over 10 further draws, the average mean was 5.3904 and the average standard deviation 0.1000. There is no fixed seed, so your numbers will differ slightly.
 
-License:
+![Training history](docs/training_history.png)
 
-MIT License
+## Run
+
+```bash
+pip install -r requirements.txt
+python zpe_noise.py
+```
+
+The script prints its progress and saves three plots to `plots/`. It runs on a GPU if one is available, otherwise on the CPU.
+
+## License
+
+MIT
